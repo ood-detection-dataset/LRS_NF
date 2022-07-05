@@ -12,7 +12,7 @@
             "args": ["--dataset_name=rings", "--base_transform_type=rl-coupling"],
             "console": "integratedTerminal",
             "justMyCode": true,
-            "cwd": "/nobackup/cole/LRS_NF",
+            "cwd": "/nobackup/naman/LRS_NF",
             "python": "${command:python.interpreterPath}"
         },
         {
@@ -23,7 +23,7 @@
             "args": ["--dataset_name=einstein", "--base_transform_type=rl", "--num_workers=8"],
             "console": "integratedTerminal",
             "justMyCode": true,
-            "cwd": "/nobackup/cole/LRS_NF",
+            "cwd": "/nobackup/naman/LRS_NF",
             "python": "${command:python.interpreterPath}"
         }
     ]

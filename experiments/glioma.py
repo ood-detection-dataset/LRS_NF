@@ -22,6 +22,11 @@ import utils
 from experiments import cutils
 from nde import flows, transforms
 from nde.distributions import uniform
+from glioma_data_loader import (
+#     test_model,
+    WSIDataset
+#     patent_class
+)
 
 parser = argparse.ArgumentParser()
 
@@ -29,13 +34,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--use_gpu', type=bool, default=True, help='Whether to use GPU.')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='einstein',
+parser.add_argument('--dataset', type=str, default='Train_GAN_Normalized',
                     help='Name of dataset to use.')
-parser.add_argument('--n_data_points', type=int, default=int(1e6),
-                    help='Number of unique data points in training set.')
+# parser.add_argument('--n_data_points', type=int, default=int(1e6),
+#                     help='Number of unique data points in training set.')
 parser.add_argument('--batch_size', type=int, default=1024,
                     help='Size of batch used for training.')
-parser.add_argument('--num_workers', type=int, default=0,
+parser.add_argument('--num_workers', type=int, default=32,
                     help='Number of workers used in data loaders.')
 
 # model
@@ -85,24 +90,20 @@ np.random.seed(args.seed)
 
 if args.use_gpu:
     device = torch.device('cuda')
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
 else:
     device = torch.device('cpu')
 
 print(device)
 
 # create data
-train_dataset = data_.load_face_dataset(
-    name=args.dataset_name,
-    num_points=args.n_data_points
-)
-train_loader = data_.InfiniteLoader(
-    dataset=train_dataset,
-    batch_size=args.batch_size,
-    shuffle=False,
-    drop_last=True,
-    num_epochs=None
-)
+GLIOMA_MODEL_PATH = "/nobackup/datasets/gdrive/UoW_MQ_Glioma/metadata_csv_folder"
+
+wsi_dataset = WSIDataset(GLIOMA_MODEL_PATH)
+
+train_loader = wsi_dataset.Obtain_loader(
+    args.dataset, args.batch_size, args.num_workers)
+
 dim = 2
 
 # Generate test grid data
@@ -200,7 +201,7 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_total_steps)
 
 # create summary writer and write to log directory
 timestamp = cutils.get_timestamp()
-log_dir   = os.path.join(cutils.get_log_root(), args.dataset_name)
+log_dir   = os.path.join(cutils.get_log_root(), args.dataset)
 writer    = SummaryWriter(log_dir=log_dir)
 filename  = os.path.join(log_dir, 'config.json')
 with open(filename, 'w') as file:
@@ -208,10 +209,10 @@ with open(filename, 'w') as file:
 
 tbar = tqdm(range(args.n_total_steps))
 for step in tbar:
-    flow.train()    
+    flow.train()
     optimizer.zero_grad()
 
-    batch = next(train_loader).to(device)
+    batch = next(iter(train_loader))['data'].to(device)
     _, log_density = flow.log_prob(batch)
     loss = - torch.mean(log_density)
     loss.backward()
@@ -264,16 +265,16 @@ for step in tbar:
 
         plt.tight_layout()
 
-        path = os.path.join(cutils.get_output_root(), '{}_{}.png'.format(args.dataset_name, step))
+        path = os.path.join(cutils.get_output_root(), '{}_{}.png'.format(args.dataset, step))
         plt.savefig(path, dpi=300)
         writer.add_figure(tag='viz', figure=figure, global_step=step)
         plt.close()
 
     if (step + 1) % args.save_interval == 0:
         path = os.path.join(cutils.get_checkpoint_root(),
-                            '{}.t'.format(args.dataset_name))
+                            '{}.t'.format(args.dataset))
         torch.save(flow.state_dict(), path)
 
 path = os.path.join(cutils.get_checkpoint_root(),
-                    '{}-{}.t'.format(args.dataset_name, timestamp))
+                    '{}-{}.t'.format(args.dataset, timestamp))
 torch.save(flow.state_dict(), path)
