@@ -25,6 +25,17 @@
             "justMyCode": true,
             "cwd": "/nobackup/naman/LRS_NF",
             "python": "${command:python.interpreterPath}"
+        },
+        {
+            "name": "images",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "args": ["with", "experiments/image_configs/glioma-256-8bit-RL.json"],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "cwd": "/nobackup/naman/LRS_NF",
+            "python": "${command:python.interpreterPath}"
         }
     ]
 }

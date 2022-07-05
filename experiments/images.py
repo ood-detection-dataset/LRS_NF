@@ -1,6 +1,10 @@
 import os
 import time
 
+import sys
+# sys.path.append('/nobackup/naman/LRS_NF/')
+sys.path.append('/nobackup/naman/LRS_NF/')
+
 import numpy as np
 import scipy.misc
 import sacred
@@ -333,11 +337,11 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
         val_loader = None
 
     # Random batch and identity transform for reconstruction evaluation.
-    random_batch, _ = next(iter(DataLoader(
+    random_batch = next(iter(DataLoader(
         dataset=train_dataset,
         batch_size=batch_size,
         num_workers=0 # Faster than starting all workers just to get a single batch.
-    )))
+    )))['data']
     identity_transform = transforms.CompositeTransform([
         flow._transform,
         transforms.InverseTransform(flow._transform)
@@ -378,7 +382,7 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
     start_time = None
     num_batches = num_steps - start_step
 
-    for step, (batch, _) in enumerate(load_num_batches(loader=train_loader,
+    for step, (batch) in enumerate(load_num_batches(loader=train_loader,
                                                        num_batches=num_batches),
                                       start=start_step):
         if step == 0:

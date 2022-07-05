@@ -194,7 +194,7 @@ def load_num_batches(loader, num_batches):
     batch_counter = 0
     while True:
         for batch in loader:
-            yield batch
+            yield batch['data']
             batch_counter += 1
             if batch_counter == num_batches:
                 return

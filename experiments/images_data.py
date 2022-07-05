@@ -9,6 +9,13 @@ from torch.utils.data import Subset, random_split
 import data
 from experiments import autils
 
+# glioma
+from glioma_data_loader import (
+    WSIDataset
+)
+GLIOMA_MODEL_PATH = "/nobackup/datasets/gdrive/UoW_MQ_Glioma/metadata_csv_folder"
+
+
 class Preprocess:
     def __init__(self, num_bits):
         self.num_bits = num_bits
@@ -297,6 +304,14 @@ def get_data(dataset, num_bits, train=True, valid_frac=None):
                 download=True,
                 transform=test_transform
             )
+    elif dataset == 'glioma':
+        root = WSIDataset(GLIOMA_MODEL_PATH)
+        c, h, w = (3, 256, 256)
+        if train:
+            train_dataset = root.Obtain_dataset('Train_GAN_Normalized')
+            valid_dataset = root.Obtain_dataset('Valid_GAN_Normalized')
+        else:
+            test_dataset = root.Obtain_dataset('Test_GAN_Normalized')
     else:
         raise RuntimeError('Unknown dataset')
 
