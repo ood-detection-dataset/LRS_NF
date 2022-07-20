@@ -16,6 +16,10 @@ from torch import nn
 from sacred import Experiment, observers
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
+
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 from tqdm import tqdm
 
 from experiments import autils
@@ -134,6 +138,14 @@ class ConvNet(nn.Module):
 
     def forward(self, inputs, context=None):
         return self.net.forward(inputs)
+
+class CustomDDP(DDP):
+    def __init__(self, flow, device_ids):
+        super().__init__(module=LogProbWrapper(flow), device_ids=device_ids)
+        self.flow = flow
+
+    def forward(self, inputs, context=None):
+        return self.flow.log_prob(inputs, context)
 
 @ex.capture
 def create_transform_step(num_channels,
@@ -308,10 +320,10 @@ def create_flow(c, h, w,
     if augment:
         _log.info('[augment] Adding a new transform layer')
 
-        transform = transforms.CompositeTransform([
-            transform,
-            transforms.AffineScalarTransform(scale=(1. / 2 ** num_bits), shift=-0.5)
-        ])
+        # transform = transforms.CompositeTransform([
+        #     transform,
+        #     transforms.AffineScalarTransform(scale=(1. / 2 ** num_bits), shift=-0.5)
+        # ])
 
     flow = flows.Flow(transform, distribution)
 
@@ -328,7 +340,7 @@ def create_flow(c, h, w,
 def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
                batch_size, num_steps, learning_rate, cosine_annealing, warmup_fraction,
                temperatures, num_bits, num_workers, intervals, multi_gpu, actnorm,
-               optimizer_checkpoint, start_step, eta_min, _log, augment, postprocess_transform=None):
+               optimizer_checkpoint, start_step, eta_min, _log, augment):
     run_dir = fso.dir
 
     flow = flow.to(device)
@@ -353,19 +365,13 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
         num_workers=0 # Faster than starting all workers just to get a single batch.
     )))
 
-    # og transform
-    new_transform = flow._transform
-
-    if postprocess_transform:
-        new_transform = transforms.CompositeTransform([
-            flow._transform,
-            postprocess_transform
-        ])
-
     identity_transform = transforms.CompositeTransform([
-        new_transform,
-        transforms.InverseTransform(new_transform)
+        flow._transform,
+        transforms.InverseTransform(flow._transform)
     ])
+
+    if multi_gpu:
+        flow = CustomDDP(flow, device_ids=[device])
 
     optimizer = torch.optim.Adam(flow.parameters(), lr=learning_rate, capturable=True)
 
@@ -414,20 +420,18 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
 
         batch = batch.to(device)
 
-        if postprocess_transform:
-            batch = postprocess_transform(batch)
-            
         if multi_gpu:
-            if actnorm and step == 0:
-                # Is using actnorm, data-dependent initialization doesn't work with data_parallel,
-                # so pass a single batch on a single GPU before the first step.
-                flow.log_prob(
-                    batch[:batch.shape[0] // torch.cuda.device_count(), ...]
-                )
+            # if actnorm and step == 0:
+            #     # Is using actnorm, data-dependent initialization doesn't work with data_parallel,
+            #     # so pass a single batch on a single GPU before the first step.
+            #     flow.log_prob(
+            #         batch[:batch.shape[0] // torch.cuda.device_count(), ...]
+            #     )
 
             # Split along the batch dimension and put each split on a separate GPU. All available
             # GPUs are used.
-            _, log_density = nn.parallel.data_parallel(LogProbWrapper(flow), batch)
+            # _, log_density = nn.parallel.data_parallel(LogProbWrapper(flow), batch)
+            _, log_density = flow(batch)
         else:
             _, log_density = flow.log_prob(batch)
 
@@ -456,8 +460,8 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
             fig, axs = plt.subplots(1, len(temperatures), figsize=(4 * len(temperatures), 4))
             for temperature, ax in zip(temperatures, axs.flat):
                 with torch.no_grad():
-                    noise = flow._distribution.sample(64) * temperature
-                    samples, _ = flow._transform.inverse(noise)
+                    noise = flow.flow._distribution.sample(64) * temperature
+                    samples, _ = flow.flow._transform.inverse(noise)
                     samples = Preprocess(num_bits).inverse(samples)
 
                 autils.imshow(make_grid(samples, nrow=8), ax)
@@ -471,8 +475,7 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
         if step > 0 and step % intervals['eval'] == 0 and (val_loader is not None):
             if multi_gpu:
                 def log_prob_fn(batch):
-                    return nn.parallel.data_parallel(LogProbWrapper(flow),
-                                                     batch.to(device))
+                    return flow(batch.to(device))
             else:
                 def log_prob_fn(batch):
                     return flow.log_prob(batch.to(device))
@@ -552,9 +555,13 @@ def sample_for_paper(seed):
            samples_per_row=10,
            seed=seed + 1)
 
+def gen_img(arr):
+    two_d = (np.reshape(arr, (28, 28)) * 255).astype(np.uint8)
+    img = Image.fromarray(two_d, 'L')
+    return img
 
 @ex.command(unobserved=True)
-def eval_on_test(batch_size, num_workers, seed, _log, test_on_corruptions, corruption_base_path):
+def eval_on_test(batch_size, num_workers, seed, _log, test_on_corruptions, corruption_base_path, dataset):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -599,18 +606,35 @@ def eval_on_test(batch_size, num_workers, seed, _log, test_on_corruptions, corru
         return mean, err
         
     if test_on_corruptions:
-        CORRUPTIONS = [
+        if dataset == 'cifar-10-fast' or dataset == 'cifar-10':
+            CORRUPTIONS = [
                         'gaussian_noise', 'shot_noise', 'impulse_noise', 'defocus_blur',
                         'glass_blur', 'motion_blur', 'zoom_blur', 'snow', 'frost', 'fog',
                         'brightness', 'contrast', 'elastic_transform', 'pixelate',
                         'jpeg_compression'
                     ]
+        else:
+            CORRUPTIONS = ['fog', 'rotate', 'brightness', 'scale', 'shear', 'shot_noise', 'zigzag', 'impulse_noise', 'spatter', 'translate', 'dotted_line', 'motion_blur', 'stripe', 'glass_blur', 'identity', 'canny_edges']
+
         mean, err = 0., 0.
         for corruption in CORRUPTIONS:
-            test_dataset.data = np.load(corruption_base_path + corruption + '.npy')
-            test_dataset.targets = torch.LongTensor(np.load(corruption_base_path + 'labels.npy'))
+            _log.info('Testing on corruption dataset: '.format(corruption))
+
+            if dataset == 'cifar-10-fast' or dataset == 'cifar-10':
+                data_path = corruption_base_path + corruption + '.npy'
+                label_path = corruption_base_path + 'labels.npy'
+            elif dataset == 'mnist':
+                data_path = corruption_base_path + corruption + '/test_images.npy'
+                label_path = corruption_base_path + corruption + '/test_labels.npy'
+
+            test_dataset.data = np.load(data_path)
+            if dataset == 'mnist':
+                test_dataset.data = gen_img(np.load(data_path))
+            
+            test_dataset.targets = torch.LongTensor(np.load(label_path))
     
             m, e = test(test_dataset)
+            print('On corruption - {}: Test log probability (bits/dim): {:.2f} +/- {:.4f}'.format(corruption, m, e))
             mean+=m
             err+=e
         mean /= len(CORRUPTIONS)
@@ -764,8 +788,12 @@ def plot_data(num_bits, num_samples, samples_per_row, seed):
 def main(seed, _log):
     torch.manual_seed(seed)
     np.random.seed(seed)
+    
+    dist.init_process_group("nccl")
+    rank = dist.get_rank()
 
-    device = set_device()
+    device = rank % torch.cuda.device_count()
+    # device = set_device()
 
     train_dataset, val_dataset, (c, h, w) = get_train_valid_data()
 

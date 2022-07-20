@@ -1,7 +1,7 @@
 {
   "actnorm": true,
   "alpha": 0.05,
-  "augment": false,
+  "augment": true,
   "batch_size": 256,
   "cosine_annealing": true,
   "test_on_corruptions": true,

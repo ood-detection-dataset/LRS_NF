@@ -107,7 +107,9 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
             if augment:
                 train_transform=tvt.Compose([
                     tvt.RandomHorizontalFlip(),
-                    tvt.AugMix(),
+                    # tvt.AutoAugment(tvt.AutoAugmentPolicy.CIFAR10),
+                    # tvt.AugMix(),
+                    tvt.ColorJitter(),
                     tvt.ToTensor(),
                     Preprocess(num_bits)
                 ])
@@ -228,7 +230,13 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
             tvt.ToTensor(),
             Preprocess(num_bits)
         ])
-
+        if augment:
+            train_transform=tvt.Compose([
+                # tvt.AutoAugment( ),
+                tvt.AugMix(),
+                tvt.ToTensor(),
+                Preprocess(num_bits)
+            ])
         test_transform = tvt.Compose([
             tvt.ToTensor(),
             Preprocess(num_bits)
@@ -272,6 +280,14 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
             RandomHorizontalFlipTensor(),
             Preprocess(num_bits)
         ])
+        if augment:
+            train_transform=tvt.Compose([
+                tvt.AutoAugment(tvt.AutoAugmentPolicy.SVHN),
+                tvt.AugMix(),
+                tvt.ToTensor(),
+                RandomHorizontalFlipTensor(),
+                Preprocess(num_bits)
+            ])
         test_transform = tvt.Compose([
             tvt.ToTensor(),
             Preprocess(num_bits)

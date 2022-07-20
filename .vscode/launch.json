@@ -100,7 +100,7 @@
                 "sample_for_paper", 
                 "with", 
                 "/nobackup/naman/LRS_NF/experiments/image_configs/cifar-10-8bit-RL.json", 
-                "flow_checkpoint=/nobackup/naman/LRS_NF/data/runs/images/cifar-10-8-bit/flow_last.pt"
+                "flow_checkpoint=/nobackup/naman/LRS_NF/data/runs/images/cifar-10-8-bit-22/flow_last.pt"
             ],
             "console": "integratedTerminal",
             "justMyCode": true,
@@ -140,7 +140,7 @@
                 "eval_on_test", 
                 "with", 
                 "/nobackup/naman/LRS_NF/experiments/image_configs/cifar-10-8bit-RL.json", 
-                "flow_checkpoint=/nobackup/naman/LRS_NF/data/runs/images/cifar-10-8-bit-10/flow_last.pt"
+                "flow_checkpoint=/nobackup/naman/LRS_NF/data/runs/images/cifar-10-8-bit-22/flow_last.pt"
             ],
             "console": "integratedTerminal",
             "justMyCode": true,
