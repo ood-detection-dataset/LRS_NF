@@ -140,12 +140,22 @@ class ConvNet(nn.Module):
         return self.net.forward(inputs)
 
 class CustomDDP(DDP):
-    def __init__(self, flow, device_ids):
-        super().__init__(module=LogProbWrapper(flow), device_ids=device_ids)
-        self.flow = flow
+    def __init__(self, module, device_ids):
+        super().__init__(module=LogProbWrapper(module), device_ids=device_ids)
+        self.module = module
 
     def forward(self, inputs, context=None):
-        return self.flow.log_prob(inputs, context)
+        return self.module.log_prob(inputs, context)
+    
+    def log_prob(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def sample(self, *args, **kwargs):
+        return self.module._sample(*args, **kwargs)
+
+    def sample_and_log_prob(self, *args, **kwargs):
+        return self.module.sample_and_log_prob(*args, **kwargs)
+
 
 @ex.capture
 def create_transform_step(num_channels,
@@ -370,8 +380,7 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
         transforms.InverseTransform(flow._transform)
     ])
 
-    if multi_gpu:
-        flow = CustomDDP(flow, device_ids=[device])
+    flow = CustomDDP(flow, device_ids=[device])
 
     optimizer = torch.optim.Adam(flow.parameters(), lr=learning_rate, capturable=True)
 
@@ -420,20 +429,20 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
 
         batch = batch.to(device)
 
-        if multi_gpu:
-            # if actnorm and step == 0:
-            #     # Is using actnorm, data-dependent initialization doesn't work with data_parallel,
-            #     # so pass a single batch on a single GPU before the first step.
-            #     flow.log_prob(
-            #         batch[:batch.shape[0] // torch.cuda.device_count(), ...]
-            #     )
+        # if multi_gpu:
+        #     # if actnorm and step == 0:
+        #     #     # Is using actnorm, data-dependent initialization doesn't work with data_parallel,
+        #     #     # so pass a single batch on a single GPU before the first step.
+        #     #     flow.log_prob(
+        #     #         batch[:batch.shape[0] // torch.cuda.device_count(), ...]
+        #     #     )
 
-            # Split along the batch dimension and put each split on a separate GPU. All available
-            # GPUs are used.
-            # _, log_density = nn.parallel.data_parallel(LogProbWrapper(flow), batch)
-            _, log_density = flow(batch)
-        else:
-            _, log_density = flow.log_prob(batch)
+        #     # Split along the batch dimension and put each split on a separate GPU. All available
+        #     # GPUs are used.
+        #     # _, log_density = nn.parallel.data_parallel(LogProbWrapper(flow), batch)
+        #     _, log_density = flow(batch)
+        # else:
+        _, log_density = flow.log_prob(batch)
 
         loss = -nats_to_bits_per_dim(torch.mean(log_density))
 
@@ -460,8 +469,8 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
             fig, axs = plt.subplots(1, len(temperatures), figsize=(4 * len(temperatures), 4))
             for temperature, ax in zip(temperatures, axs.flat):
                 with torch.no_grad():
-                    noise = flow.flow._distribution.sample(64) * temperature
-                    samples, _ = flow.flow._transform.inverse(noise)
+                    noise = flow.sample(64) * temperature
+                    samples, _ = flow._transform.inverse(noise)
                     samples = Preprocess(num_bits).inverse(samples)
 
                 autils.imshow(make_grid(samples, nrow=8), ax)
@@ -473,12 +482,8 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
             plt.close(fig)
 
         if step > 0 and step % intervals['eval'] == 0 and (val_loader is not None):
-            if multi_gpu:
-                def log_prob_fn(batch):
-                    return flow(batch.to(device))
-            else:
-                def log_prob_fn(batch):
-                    return flow.log_prob(batch.to(device))
+            def log_prob_fn(batch):
+                return flow.log_prob(batch.to(device))
 
             val_log_prob = autils.eval_log_density_3(log_prob_fn=log_prob_fn,
                                                    data_loader=val_loader)
