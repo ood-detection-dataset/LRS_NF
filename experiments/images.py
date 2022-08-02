@@ -35,6 +35,8 @@ matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 
+from cifar10_models.resnet import resnet50
+
 # Capture job id on the cluster
 sacred.SETTINGS.HOST_INFO.CAPTURED_ENV.append('SLURM_JOB_ID')
 
@@ -118,6 +120,7 @@ def config():
     iter_num=10000
 
     augment = False
+    embeddings = False
 
 
 class ConvNet(nn.Module):
@@ -158,7 +161,8 @@ def create_transform_step(num_channels,
 
     # here num_channels = 4c = 12
     # divide data into two parts (split at midpoint)
-    mask = utils.create_mid_split_binary_mask(num_channels)
+    # mask = utils.create_mid_split_binary_mask(num_channels)
+    mask = utils.create_random_binary_mask(num_channels)
 
     if coupling_layer_type == 'cubic_spline':
         coupling_layer = transforms.PiecewiseCubicCouplingTransform(
@@ -235,7 +239,7 @@ def create_transform_step(num_channels,
 @ex.capture
 def create_transform(c, h, w,
                      levels, hidden_channels, steps_per_level, alpha, num_bits, preprocessing,
-                     multi_scale, augment):
+                     multi_scale, augment, embeddings):
     if not isinstance(hidden_channels, list):
         hidden_channels = [hidden_channels] * levels
 
@@ -263,14 +267,20 @@ def create_transform(c, h, w,
         all_transforms = []
 
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
-            squeeze_transform = transforms.SqueezeTransform()
-            c, h, w = squeeze_transform.get_output_shape(c, h, w)
+            if not embeddings:
+                squeeze_transform = transforms.SqueezeTransform()
+                c, h, w = squeeze_transform.get_output_shape(c, h, w)
+                transform_level = transforms.CompositeTransform(
+                    [squeeze_transform]
+                    + [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
+                    + [transforms.OneByOneConvolution(c)] # End each level with a linear transformation.
+                )
+            else:
+                transform_level = transforms.CompositeTransform(
+                    [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
+                    + [transforms.OneByOneConvolution(c)] # End each level with a linear transformation.
+                )
 
-            transform_level = transforms.CompositeTransform(
-                [squeeze_transform]
-                + [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
-                + [transforms.OneByOneConvolution(c)] # End each level with a linear transformation.
-            )
             all_transforms.append(transform_level)
 
         all_transforms.append(transforms.ReshapeTransform(
@@ -314,13 +324,13 @@ def create_flow(c, h, w,
     distribution = distributions.StandardNormal((c * h * w,))
     transform    = create_transform(c, h, w)
 
-    if augment:
-        _log.info('[augment] Adding a new transform layer')
+    # if augment:
+        # _log.info('[augment] Adding a new transform layer')
 
-        transform = transforms.CompositeTransform([
-            transform,
-            transforms.AffineScalarTransform(scale=(1. / 2 ** num_bits), shift=-0.5)
-        ])
+        # transform = transforms.CompositeTransform([
+        #     transform,
+        #     transforms.AffineScalarTransform(scale=(1. / 2 ** num_bits), shift=-0.5)
+        # ])
 
     flow = flows.Flow(transform, distribution)
 
@@ -333,11 +343,37 @@ def create_flow(c, h, w,
 
     return flow
 
+@torch.no_grad()
+def get_feature(net: "nn.Module", input_tensor: "Tensor", layer_name):
+    # GPUtil.showUtilization()
+
+    activation = []
+    def _get_activation(name):
+        def hook(model, input, output):
+            activation.append(output.detach())
+        return hook
+
+    # register forward hooks on the layers of choice
+    for name, module in net.named_modules():
+        # only register hooks for layer_name
+
+            if name == layer_name:
+                hook = module.register_forward_hook(_get_activation(name))
+
+    # get output layer
+    net(input_tensor)
+    # feature_list.append(output.detach().to(device))
+
+    # detach the hook
+    hook.remove()
+
+    return activation
+
 @ex.capture
 def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
                batch_size, num_steps, learning_rate, cosine_annealing, warmup_fraction,
                temperatures, num_bits, num_workers, intervals, multi_gpu, actnorm,
-               optimizer_checkpoint, start_step, eta_min, _log, augment):
+               optimizer_checkpoint, start_step, eta_min, _log, augment, embeddings):
     run_dir = fso.dir
 
     flow = flow.to(device)
@@ -368,6 +404,22 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
     ])
 
     optimizer = torch.optim.Adam(flow.parameters(), lr=learning_rate, capturable=True)
+
+    if augment:
+        _log.info('[augment] Freezing layer 1-6 of the flow model')
+        # freeze all parameters
+        for _, param in flow.named_parameters():
+            param.require_grad = False
+
+        layer_name = "_transform._transforms.1._transforms.2._transforms."
+
+        # unfreeze 7th and 8th layer
+        for name, param in flow.named_parameters():
+            if (layer_name + '7.' or  layer_name + '8.') in name:
+                param.require_grad = True
+        
+        # only pass params whose requires_grad = True  
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, flow.parameters()), lr=learning_rate, capturable=True)
 
     if optimizer_checkpoint is not None:
         optimizer.load_state_dict(torch.load(optimizer_checkpoint))
@@ -402,6 +454,11 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
     start_time = None
     num_batches = num_steps - start_step
 
+    if embeddings:
+        model = resnet50(pretrained=True).to(device)
+        LAYER_NAME =  "avgpool"
+        feature_dim = 2048
+
     for step, (batch, _) in enumerate(load_num_batches(loader=train_loader,
                                                        num_batches=num_batches),
                                       start=start_step):
@@ -413,7 +470,10 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
         optimizer.zero_grad()
 
         batch = batch.to(device)
-            
+
+        if embeddings:
+            batch = get_feature(model, batch, LAYER_NAME)[0]
+
         if multi_gpu:
             if actnorm and step == 0:
                 # Is using actnorm, data-dependent initialization doesn't work with data_parallel,
@@ -449,29 +509,33 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
             progress = autils.progress_string(elapsed_time, step, num_steps)
             _log.info("It: {}/{} loss: {:.3f} [{}]".format(step, num_steps, loss, progress))
 
-        if step % intervals['sample'] == 0:
-            fig, axs = plt.subplots(1, len(temperatures), figsize=(4 * len(temperatures), 4))
-            for temperature, ax in zip(temperatures, axs.flat):
-                with torch.no_grad():
-                    noise = flow._distribution.sample(64) * temperature
-                    samples, _ = flow._transform.inverse(noise)
-                    samples = Preprocess(num_bits).inverse(samples)
+        # if step % intervals['sample'] == 0:
+        #     fig, axs = plt.subplots(1, len(temperatures), figsize=(4 * len(temperatures), 4))
+        #     for temperature, ax in zip(temperatures, axs.flat):
+        #         with torch.no_grad():
+        #             noise = flow._distribution.sample(64) * temperature
+        #             samples, _ = flow._transform.inverse(noise)
+        #             samples = Preprocess(num_bits).inverse(samples)
 
-                autils.imshow(make_grid(samples, nrow=8), ax)
+        #         autils.imshow(make_grid(samples, nrow=8), ax)
 
-                ax.set_title('T={:.2f}'.format(temperature))
+        #         ax.set_title('T={:.2f}'.format(temperature))
 
-            summary_writer.add_figure(tag='samples', figure=fig, global_step=step)
+        #     summary_writer.add_figure(tag='samples', figure=fig, global_step=step)
 
-            plt.close(fig)
+        #     plt.close(fig)
 
         if step > 0 and step % intervals['eval'] == 0 and (val_loader is not None):
             if multi_gpu:
                 def log_prob_fn(batch):
+                    if embeddings:
+                        batch = get_feature(model, batch, LAYER_NAME)[0]
                     return nn.parallel.data_parallel(LogProbWrapper(flow),
                                                      batch.to(device))
             else:
                 def log_prob_fn(batch):
+                    if embeddings:
+                        batch = get_feature(model, batch, LAYER_NAME)[0]
                     return flow.log_prob(batch.to(device))
 
             val_log_prob = autils.eval_log_density_3(log_prob_fn=log_prob_fn,
@@ -493,20 +557,20 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
             torch.save(flow.state_dict(), os.path.join(run_dir, 'flow_last.pt'))
             _log.info('It: {}/{} saved optimizer_last.pt and flow_last.pt'.format(step, num_steps))
 
-        if step > 0 and step % intervals['reconstruct'] == 0:
-            with torch.no_grad():
-                random_batch_ = random_batch.to(device)
-                random_batch_rec, logabsdet = identity_transform(random_batch_)
+        # if step > 0 and step % intervals['reconstruct'] == 0:
+        #     with torch.no_grad():
+        #         random_batch_ = random_batch.to(device)
+        #         random_batch_rec, logabsdet = identity_transform(random_batch_)
 
-                max_abs_diff = torch.max(torch.abs(random_batch_rec - random_batch_))
-                max_logabsdet = torch.max(logabsdet)
+        #         max_abs_diff = torch.max(torch.abs(random_batch_rec - random_batch_))
+        #         max_logabsdet = torch.max(logabsdet)
 
-            summary_writer.add_scalar(tag='max_reconstr_abs_diff',
-                                      scalar_value=max_abs_diff.item(),
-                                      global_step=step)
-            summary_writer.add_scalar(tag='max_reconstr_logabsdet',
-                                      scalar_value=max_logabsdet.item(),
-                                      global_step=step)
+        #     summary_writer.add_scalar(tag='max_reconstr_abs_diff',
+        #                               scalar_value=max_abs_diff.item(),
+        #                               global_step=step)
+        #     summary_writer.add_scalar(tag='max_reconstr_logabsdet',
+        #                               scalar_value=max_logabsdet.item(),
+        #                               global_step=step)
 
 @ex.capture
 def set_device(use_gpu, multi_gpu, _log):
@@ -596,9 +660,15 @@ def eval_on_test(batch_size, num_workers, seed, _log, test_on_corruptions, corru
         return mean, err
         
     if test_on_corruptions:
+        # CORRUPTIONS = [
+        #                 'gaussian_noise', 'shot_noise', 'impulse_noise', 'defocus_blur',
+        #                 'glass_blur', 'motion_blur', 'zoom_blur', 'snow', 'frost', 'fog',
+        #                 'brightness', 'contrast', 'elastic_transform', 'pixelate',
+        #                 'jpeg_compression'
+        #             ]
         CORRUPTIONS = [
-                        'gaussian_noise', 'shot_noise', 'impulse_noise', 'defocus_blur',
-                        'glass_blur', 'motion_blur', 'zoom_blur', 'snow', 'frost', 'fog',
+                        'gaussian_noise', 'shot_noise', 'defocus_blur',
+                        'zoom_blur',
                         'brightness', 'contrast', 'elastic_transform', 'pixelate',
                         'jpeg_compression'
                     ]
@@ -759,13 +829,16 @@ def plot_data(num_bits, num_samples, samples_per_row, seed):
                pad_value=1)
 
 @ex.automain
-def main(seed, _log):
+def main(seed, _log, embeddings):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     device = set_device()
 
     train_dataset, val_dataset, (c, h, w) = get_train_valid_data()
+    
+    if embeddings:
+        c, h, w = 2048, 1, 1
 
     _log.info('Training dataset size: {}'.format(len(train_dataset)))
 

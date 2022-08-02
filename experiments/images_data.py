@@ -107,15 +107,35 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
             if augment:
                 train_transform=tvt.Compose([
                     tvt.RandomHorizontalFlip(),
+                    # tvt.RandomApply([
+                    #     tvt.AutoAugment(tvt.AutoAugmentPolicy(tvt.AutoAugmentPolicy.CIFAR10)),
+                    #     tvt.AugMix(),
+                    # ]),
+                    tvt.AutoAugment(tvt.AutoAugmentPolicy(tvt.AutoAugmentPolicy.CIFAR10)),
                     tvt.AugMix(),
                     tvt.ToTensor(),
                     Preprocess(num_bits)
                 ])
 
+            # if embeddings:
+            #     model = resnet50(pretrained=True).to(device)
+            #     train_transform=tvt.Compose([
+            #         tvt.ToTensor(),
+            #         extract_embeddings.ExtractEmbeddings(model, device)
+            #     ])
+
             test_transform = tvt.Compose([
                 tvt.ToTensor(),
                 Preprocess(num_bits)
             ])
+
+            # if embeddings:
+            #     model = resnet50(pretrained=True)
+            #     test_transform=tvt.Compose([
+            #         tvt.ToTensor(),
+            #         extract_embeddings.ExtractEmbeddings(model, device)
+            #     ])
+
 
         if train:
             train_dataset = dataset_class(
