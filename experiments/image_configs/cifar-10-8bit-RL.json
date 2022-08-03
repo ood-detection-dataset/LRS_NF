@@ -5,7 +5,7 @@
   "embeddings": true,
   "batch_size": 256,
   "cosine_annealing": true,
-  "test_on_corruptions": true,
+  "test_on_corruptions": false,
   "corruption_base_path": "/nobackup2/datasets/cifar/cifar-10/cifar-10-c/",
   "coupling_layer_type": "affine",
   "dataset": "cifar-10",

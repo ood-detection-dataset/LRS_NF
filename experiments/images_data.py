@@ -89,6 +89,9 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
     elif dataset == 'cifar-10-fast' or dataset == 'cifar-10':
         root = dataset_root('cifar-10')
         c, h, w = (3, 32, 32)
+        
+        mean = (0.4914, 0.4822, 0.4465)
+        std = (0.2471, 0.2435, 0.2616)
 
         if dataset == 'cifar-10-fast':
             dataset_class = data.CIFAR10Fast
@@ -100,42 +103,28 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
         else:
             dataset_class = datasets.CIFAR10
             train_transform=tvt.Compose([
+                tvt.RandomCrop(32, padding=4),
                 tvt.RandomHorizontalFlip(),
                 tvt.ToTensor(),
-                Preprocess(num_bits)
+                tvt.Normalize(mean, std)
+                # Preprocess(num_bits)
             ])
             if augment:
                 train_transform=tvt.Compose([
+                    tvt.RandomCrop(32, padding=4),
                     tvt.RandomHorizontalFlip(),
-                    # tvt.RandomApply([
-                    #     tvt.AutoAugment(tvt.AutoAugmentPolicy(tvt.AutoAugmentPolicy.CIFAR10)),
-                    #     tvt.AugMix(),
-                    # ]),
                     tvt.AutoAugment(tvt.AutoAugmentPolicy(tvt.AutoAugmentPolicy.CIFAR10)),
                     tvt.AugMix(),
                     tvt.ToTensor(),
-                    Preprocess(num_bits)
+                    tvt.Normalize(mean, std)
+                    # Preprocess(num_bits)
                 ])
 
-            # if embeddings:
-            #     model = resnet50(pretrained=True).to(device)
-            #     train_transform=tvt.Compose([
-            #         tvt.ToTensor(),
-            #         extract_embeddings.ExtractEmbeddings(model, device)
-            #     ])
 
             test_transform = tvt.Compose([
                 tvt.ToTensor(),
                 Preprocess(num_bits)
             ])
-
-            # if embeddings:
-            #     model = resnet50(pretrained=True)
-            #     test_transform=tvt.Compose([
-            #         tvt.ToTensor(),
-            #         extract_embeddings.ExtractEmbeddings(model, device)
-            #     ])
-
 
         if train:
             train_dataset = dataset_class(
