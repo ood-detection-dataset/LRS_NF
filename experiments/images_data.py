@@ -9,6 +9,8 @@ from torch.utils.data import Subset, random_split
 import data
 from experiments import autils
 
+from transfer_datasets import TransferCIFAR,TransferSVHN, TransferCelebA
+
 class Preprocess:
     def __init__(self, num_bits):
         self.num_bits = num_bits
@@ -152,6 +154,49 @@ def get_data(dataset, num_bits, train=True, valid_frac=None, augment=False):
                 root=root,
                 train=False,
                 download=True,
+                transform=test_transform
+            )
+    elif dataset == 'cifar-10-transfer':
+        root = dataset_root('cifar-10-transfer')
+        # c, h, w = (3, 32, 32)
+        dataset_class = TransferCIFAR
+        feature_dim = 1792
+        train_transform = tvt.Compose([tvt.ToTensor()])
+
+        if augment:
+            # TODO: Create custom transform for Augmix'ed data's EfficientNet embeddings
+            train_transform = tvt.Compose([tvt.ToTensor()])
+
+        test_transform = tvt.Compose([
+            tvt.ToTensor()
+        ])
+
+        if train:
+            train_dataset = dataset_class(
+                root=root,
+                train=True,
+                download=False,
+                transform=train_transform
+            )
+
+            valid_dataset = dataset_class(
+                root=root,
+                train=True,
+                transform=test_transform # Note different transform.
+            )
+
+            num_train = len(train_dataset)
+            indices = torch.randperm(num_train).tolist()
+            valid_size = int(np.floor(valid_frac * num_train))
+            train_idx, valid_idx = indices[valid_size:], indices[:valid_size]
+
+            train_dataset = Subset(train_dataset, train_idx)
+            valid_dataset = Subset(valid_dataset, valid_idx)
+        else:
+            test_dataset = dataset_class(
+                root=root,
+                train=False,
+                download=False,
                 transform=test_transform
             )
     elif dataset == 'imagenet-32' or dataset == 'imagenet-64':
